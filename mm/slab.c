@@ -2123,13 +2123,15 @@ static void drain_array_locked(struct kmem_cache *cachep, struct array_cache *ac
 
 	if (!ac || !ac->avail)
 		return;
-
+    //默认回收缓存的剩余空闲对象
 	tofree = free_all ? ac->avail : (ac->limit + 4) / 5;
 	if (tofree > ac->avail)
 		tofree = (ac->avail + 1) / 2;
 
+    //释放本地CPU剩余对象，并将对应的page更新到对应slab链表
 	free_block(cachep, ac->entry, tofree, node, list);
 	ac->avail -= tofree;
+    //因为是从前往后释放，因此将前面几个对象覆盖
 	memmove(ac->entry, &(ac->entry[tofree]), sizeof(void *) * ac->avail);
 }
 
@@ -3332,20 +3334,22 @@ static void free_block(struct kmem_cache *cachep, void **objpp,
 	struct page *page;
 
 	n->free_objects += nr_objects;
-
+    //释放本地CPU上剩余空闲对象，从前往后释放
 	for (i = 0; i < nr_objects; i++) {
 		void *objp;
 		struct page *page;
 
 		objp = objpp[i];
-
+        //通过对象获取对应slab/page地址
 		page = virt_to_head_page(objp);
 		list_del(&page->slab_list);
 		check_spinlock_acquired_node(cachep, node);
+        //释放空闲对象，其实操作的就是freelist索引数组
 		slab_put_obj(cachep, page, objp);
 		STATS_DEC_ACTIVE(cachep);
 
 		/* fixup slab chains */
+        //根据释放后page的状态将其挂到slabs_free或者slabs_partial链表
 		if (page->active == 0) {
 			list_add(&page->slab_list, &n->slabs_free);
 			n->free_slabs++;
@@ -3358,10 +3362,13 @@ static void free_block(struct kmem_cache *cachep, void **objpp,
 		}
 	}
 
+    //如果释放后该节点的空闲对象数量超限，且空闲slab链表不为空
+    //需要将超限的slab释放，让其返回上级buddy system中
 	while (n->free_objects > n->free_limit && !list_empty(&n->slabs_free)) {
 		n->free_objects -= cachep->num;
 
 		page = list_last_entry(&n->slabs_free, struct page, slab_list);
+        //将超限的页面挂到临时链表上，上层函数会统一释放
 		list_move(&page->slab_list, list);
 		n->free_slabs--;
 		n->total_slabs--;
@@ -3951,16 +3958,19 @@ static void drain_array(struct kmem_cache *cachep, struct kmem_cache_node *n,
 
 	if (!ac || !ac->avail)
 		return;
-
+    //如果之前使用过这个AC，则不回收，因为大概率之后还会使用
 	if (ac->touched) {
 		ac->touched = 0;
 		return;
 	}
 
 	spin_lock_irq(&n->list_lock);
+    //走到这，说明之前一段时间都没使用过这个AC，收缩下缓存数量
+    //将余下空闲对象都回收
 	drain_array_locked(cachep, ac, node, false, &list);
 	spin_unlock_irq(&n->list_lock);
-
+    //释放掉超限的page页面，返回到上级buddy system中
+    //对应的freelist数组也一起释放
 	slabs_destroy(cachep, &list);
 }
 
@@ -3976,6 +3986,13 @@ static void drain_array(struct kmem_cache *cachep, struct kmem_cache_node *n,
  * If we cannot acquire the cache chain mutex then just give up - we'll try
  * again on the next iteration.
  */
+ /*
+1、回收alien链表，也就是和其他node共享的slab缓存链表
+2、回收本地CPU高速缓存对象
+3、回收当前node上共享的slab缓存
+4、回收部分slabs_free链表上的对象
+5、重置定时器，设置每隔2s进行一次slab空闲对象回收
+ */
 static void cache_reap(struct work_struct *w)
 {
 	struct kmem_cache *searchp;
@@ -3983,12 +4000,13 @@ static void cache_reap(struct work_struct *w)
 	int node = numa_mem_id();
 	struct delayed_work *work = to_delayed_work(w);
 
-	if (!mutex_trylock(&slab_mutex))
+	if (!mutex_trylock(&slab_mutex)) /*获取不到slab_mutex锁，就退出下次再尝试*/
 		/* Give up. Setup the next iteration. */
 		goto out;
 
 	list_for_each_entry(searchp, &slab_caches, list) {
-		check_irq_on();
+	    /*开启了CONFIG_DEBUG_SLAB，这里会BUG_ON(irqs_disabled());,否则是空, 这个需要在关中断情况下执行*/
+		check_irq_on(); 
 
 		/*
 		 * We only take the node lock if absolutely necessary and we
@@ -3996,27 +4014,34 @@ static void cache_reap(struct work_struct *w)
 		 * we can do some work if the lock was obtained.
 		 */
 		n = get_node(searchp, node);
-
+        //1、先回收alien链表，也就是和其他node共享的slab对象链表
 		reap_alien(searchp, n);
-
+        //2、再回收本地CPU高速缓存对象
 		drain_array(searchp, n, cpu_cache_get(searchp), node);
 
 		/*
 		 * These are racy checks but it does not matter
 		 * if we skip one check or scan twice.
 		 */
+		//设置此次回收的超时时间，REAPTIMEOUT_NODE，即4s
+        //因为回收的间隔是2s，所以尽量在下次开始前确保此次结束
 		if (time_after(n->next_reap, jiffies))
 			goto next;
 
 		n->next_reap = jiffies + REAPTIMEOUT_NODE;
 
+        //3、回收当前node上共享的slab缓存
 		drain_array(searchp, n, n->shared, node);
 
 		if (n->free_touched)
+            //free_touched不为0，说明此前使用过，回收后置0
 			n->free_touched = 0;
 		else {
 			int freed;
-
+            //如果free_touched为0，说明此前没使用过node上的缓存对象
+            //回收部分slabs_free链表上的对象，回收数量为节点空闲对象上限/5倍每个slab对象数
+            //且向上取整，比如free_limit=102，num=5，则此时要回收5个空闲对象
+            //4、回收部分slabs_free链表上的对象
 			freed = drain_freelist(searchp, n, (n->free_limit +
 				5 * searchp->num - 1) / (5 * searchp->num));
 			STATS_ADD_REAPED(searchp, freed);
@@ -4029,6 +4054,7 @@ next:
 	next_reap_node();
 out:
 	/* Set up the next iteration */
+    //设置下次回收缓存时间，REAPTIMEOUT_AC，即2s后
 	schedule_delayed_work_on(smp_processor_id(), work,
 				round_jiffies_relative(REAPTIMEOUT_AC));
 }
