@@ -98,6 +98,9 @@ void free_kthread_struct(struct task_struct *k)
  * and this will return true.  You should then return, and your return
  * value will be passed through to kthread_stop().
  */
+ /*kthread_should_stop()返回should_stop标志。它用于创建的线程检查结束标志，并决定是否退出。
+ 线程完全可以在完成自己的工作后主动结束，不需等待should_stop标志。
+ */
 bool kthread_should_stop(void)
 {
 	return test_bit(KTHREAD_SHOULD_STOP, &to_kthread(current)->flags);
