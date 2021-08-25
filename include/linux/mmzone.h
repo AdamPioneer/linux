@@ -724,12 +724,11 @@ typedef struct pglist_data {
 	unsigned long node_spanned_pages; /* total size of physical page
 					     range, including holes */
 	int node_id;
-	wait_queue_head_t kswapd_wait;
-	wait_queue_head_t pfmemalloc_wait;
-	struct task_struct *kswapd;	/* Protected by
-					   mem_hotplug_begin/end() */
-	int kswapd_order;
-	enum zone_type kswapd_classzone_idx;
+	wait_queue_head_t kswapd_wait;//kswapd进程的等待队列
+	wait_queue_head_t pfmemalloc_wait;//直接内存回收过程中的进程等待队列
+	struct task_struct *kswapd;	/* Protected by mem_hotplug_begin/end() */	//指向该结点的kswapd进程的task_struct
+	int kswapd_order; //kswap回收页面大小
+	enum zone_type kswapd_classzone_idx;//kswap扫描的内存域范围
 
 	int kswapd_failures;		/* Number of 'reclaimed == 0' runs */
 

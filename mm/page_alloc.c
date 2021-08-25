@@ -4171,10 +4171,12 @@ static void wake_all_kswapds(unsigned int order, gfp_t gfp_mask,
 	struct zone *zone;
 	pg_data_t *last_pgdat = NULL;
 	enum zone_type high_zoneidx = ac->high_zoneidx;
-
+    //遍历每个zone，唤醒每个zone对应的kswap进程回收内存
+    //有点奇怪，为啥不直接遍历node就好，还得从zone返回查找node
 	for_each_zone_zonelist_nodemask(zone, z, ac->zonelist, high_zoneidx,
 					ac->nodemask) {
 		if (last_pgdat != zone->zone_pgdat)
+            //唤醒kswap进程
 			wakeup_kswapd(zone, gfp_mask, order, high_zoneidx);
 		last_pgdat = zone->zone_pgdat;
 	}
@@ -4559,12 +4561,17 @@ retry:
 		goto nopage;
 
 	/* Try direct reclaim and then allocating */
+    /*
+    当上面wake_all_kswapds唤醒kswap返回后，会尝试分配内存，
+    如果还是失败，会再一次切换zone，如果切换后还是无法分配出内存，就只能进行直接内存回收了
+    */
 	page = __alloc_pages_direct_reclaim(gfp_mask, order, alloc_flags, ac,
 							&did_some_progress);
 	if (page)
 		goto got_pg;
 
 	/* Try direct compaction and then allocating */
+    //内存碎片整理
 	page = __alloc_pages_direct_compact(gfp_mask, order, alloc_flags, ac,
 					compact_priority, &compact_result);
 	if (page)
