@@ -46,6 +46,7 @@ static void drop_pagecache_sb(struct super_block *sb, void *unused)
 	iput(toput_inode);
 }
 
+/*drop_cache 入口函数*/
 int drop_caches_sysctl_handler(struct ctl_table *table, int write,
 	void __user *buffer, size_t *length, loff_t *ppos)
 {
@@ -56,11 +57,12 @@ int drop_caches_sysctl_handler(struct ctl_table *table, int write,
 		return ret;
 	if (write) {
 		static int stfu;
-
+        //回收page cache
 		if (sysctl_drop_caches & 1) {
 			iterate_supers(drop_pagecache_sb, NULL);
 			count_vm_event(DROP_PAGECACHE);
 		}
+        //回收slab
 		if (sysctl_drop_caches & 2) {
 			drop_slab();
 			count_vm_event(DROP_SLAB);
